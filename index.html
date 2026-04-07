@@ -951,8 +951,12 @@ async function loadOTSModels() {
   try {
     const resp = await fetch(OTS_CSV_URL);
     const text = await resp.text();
-    const rows = parseCSV(text);
-    otsModels = rows.map(r => r.model).filter(m => m);
+    // The Google Sheet CSV has one column; header may be "OTS Inventory Catalog"
+    // with "Model Name" as the first data row. Extract all non-header values.
+    const lines = text.split('\n').map(l => l.replace(/\r/g, '').trim()).filter(l => l);
+    const skip = new Set(['ots inventory catalog', 'model name', 'model']);
+    otsModels = lines.filter(l => !skip.has(l.toLowerCase())).map(l => l.replace(/^"|"$/g, ''));
+    console.log('OTS models loaded:', otsModels.length);
   } catch(e) {
     console.warn('Could not load OTS models:', e);
   }
