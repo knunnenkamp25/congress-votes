@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Congress Vote Lookup</title>
+<title>Legislative Vote Lookup</title>
 <style>
   :root { --brand: #1a3a5c; --accent: #2c6fbb; --bg: #f5f6f8; --card: #fff; --border: #d1d5db; --text: #1f2937; --muted: #6b7280; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -101,16 +101,39 @@
 <body>
 
 <div class="header">
-  <h1>Congress Vote Lookup</h1>
-  <p>Search any member of Congress and view their complete voting record. Data from VoteView (1789âpresent).</p>
+  <h1>Legislative Vote Lookup</h1>
+  <p>Search any federal or state legislator and view their complete voting record.</p>
 </div>
 
 <div class="container">
   <!-- Controls -->
   <div class="controls">
+    <div class="control-group">
+      <label>Data Source</label>
+      <select id="dataSource">
+        <option value="federal">U.S. Congress</option>
+        <option value="state">State Legislature</option>
+      </select>
+    </div>
+
+    <div class="control-group" id="stateControls" style="display:none;">
+      <label>State</label>
+      <select id="stateSelect">
+        <option value="">Select state...</option>
+        <option value="VA">Virginia</option>
+      </select>
+    </div>
+
+    <div class="control-group" id="sessionControls" style="display:none;">
+      <label>Session</label>
+      <select id="sessionSelect">
+        <option value="">Select session...</option>
+      </select>
+    </div>
+
     <div class="control-group" style="flex:1; min-width:300px;">
       <label>Search Member</label>
-      <input type="text" id="memberSearch" class="search-input" placeholder="Type a name (e.g. Cruz, Pelosi, McConnell) â¦" autocomplete="off">
+      <input type="text" id="memberSearch" class="search-input" placeholder="Type a name (e.g. Cruz, Pelosi, McConnell) ..." autocomplete="off">
       <div id="searchDropdown" style="position:relative;">
         <div id="dropdownList" style="display:none; position:absolute; top:0; left:0; right:0; max-height:300px; overflow-y:auto; background:#fff; border:1px solid var(--border); border-radius:6px; box-shadow:0 4px 12px rgba(0,0,0,0.1); z-index:10;"></div>
       </div>
@@ -147,7 +170,7 @@
   </div>
 
   <!-- Status -->
-  <div class="status" id="status">Loading member directory â¦</div>
+  <div class="status" id="status">Loading member directory ...</div>
 
   <!-- Active keyword filter pill -->
   <div id="activeKwFilter" class="active-kw-filter" style="display:none;">
@@ -157,7 +180,7 @@
 
   <!-- Filter bar (shown after data loads) -->
   <div class="filter-bar" id="filterBar" style="display:none;">
-    <input type="text" id="tableSearch" placeholder="Filter by keyword, bill number, or description â¦">
+    <input type="text" id="tableSearch" placeholder="Filter by keyword, bill number, or description ...">
     <select id="voteFilter">
       <option value="">All votes</option>
       <option value="Yes">Yes / Yea</option>
@@ -234,7 +257,7 @@
           <p style="font-size:12px; color:var(--muted); margin-top:2px;">Every keyword from this member's votes, ranked by frequency. Click a keyword to filter the vote table above.</p>
         </div>
         <div style="display:flex; gap:8px; align-items:center;">
-          <input type="text" id="kwSearch" placeholder="Search keywords â¦" style="padding:4px 8px; border:1px solid var(--border); border-radius:4px; font-size:12px; width:150px;">
+          <input type="text" id="kwSearch" placeholder="Search keywords ..." style="padding:4px 8px; border:1px solid var(--border); border-radius:4px; font-size:12px; width:150px;">
           <label style="font-size:12px; color:var(--muted);">Min:</label>
           <input type="number" id="minKwVotes" value="2" min="1" style="width:50px; padding:4px 8px; border:1px solid var(--border); border-radius:4px; font-size:13px;">
           <button class="btn-secondary" id="kwCsvBtn" style="font-size:12px; padding:4px 12px;">Download Keyword CSV</button>
@@ -272,12 +295,21 @@ let filteredRecords = [];
 let sortCol = 'date';
 let sortAsc = false;
 
+// State legislature mode
+let dataMode = 'federal'; // 'federal' or 'state'
+let stateMembers = []; // for state legislature mode
+let stateSessions = null; // sessions index
+let currentState = '';
+let currentSession = '';
+
+const STATE_DATA_BASE = './state_data';  // relative to index.html on GitHub Pages
+
 const VOTEVIEW = 'https://voteview.com/static/data/out';
 const PROXY = 'https://api.codetabs.com/v1/proxy?quest=';
 const CONGRESS_API = 'https://api.congress.gov/v3';
 const CONGRESS_API_KEY = '3EjVW2YdyBLeswQgk2dMceZ1L5C7lXcReGE9ePV0';
 const CAST = {1:'Yes',2:'Yes',3:'Yes',4:'No',5:'No',6:'No',7:'Present',8:'Present',9:'Not Voting'};
-const summaryCache = {}; // bill_number â {title, summary}
+const summaryCache = {}; // bill_number → {title, summary}
 const PARTY_MAP = {'100':'Democratic','200':'Republican','328':'Independent','114':'Whig','1':'Federalist'};
 
 // Google Sheet with OTS model list (public CSV export)
@@ -285,7 +317,7 @@ const OTS_SHEET_ID = '1rV7Dgr72gE47MOcYzD9OsuA_f8eU4flA_iBMAgvQjps';
 const OTS_CSV_URL = `https://docs.google.com/spreadsheets/d/${OTS_SHEET_ID}/export?format=csv&gid=0`;
 
 // ---------------------------------------------------------------------------
-// OTS Model â keyword mapping
+// OTS Model – keyword mapping
 // Each model has an array of lowercase keyword/phrase patterns to match against
 // bill titles, descriptions, and extracted keywords.
 // ---------------------------------------------------------------------------
@@ -398,11 +430,11 @@ function parseCSVLine(line) {
 }
 
 // ---------------------------------------------------------------------------
-// Load member directory
+// Load member directory (federal)
 // ---------------------------------------------------------------------------
 async function loadMembers() {
   $('status').className = 'status loading';
-  $('status').textContent = 'Loading member directory â¦';
+  $('status').textContent = 'Loading member directory ...';
 
   const resp = await smartFetch(VOTEVIEW + '/members/HSall_members.csv');
   const text = await resp.text();
@@ -440,6 +472,69 @@ async function loadMembers() {
 }
 
 // ---------------------------------------------------------------------------
+// Load state sessions and members
+// ---------------------------------------------------------------------------
+async function loadStateSessions() {
+  try {
+    $('status').className = 'status loading';
+    $('status').textContent = 'Loading state sessions...';
+    $('status').style.display = 'block';
+    if (typeof EMBEDDED_SESSIONS !== 'undefined') {
+      stateSessions = EMBEDDED_SESSIONS;
+    } else {
+      const resp = await fetch(STATE_DATA_BASE + '/sessions.json');
+      stateSessions = await resp.json();
+    }
+    $('status').className = 'status';
+    $('status').textContent = 'Select a state and session above.';
+  } catch(e) {
+    $('status').textContent = 'Error loading sessions: ' + e.message;
+  }
+}
+
+async function loadStateMembers() {
+  const state = $('stateSelect').value;
+  const session = $('sessionSelect').value;
+  if (!state || !session) return;
+
+  currentState = state;
+  currentSession = session;
+
+  $('status').className = 'status loading';
+  $('status').textContent = 'Loading member directory...';
+  $('status').style.display = 'block';
+
+  try {
+    let people;
+    if (typeof EMBEDDED_PEOPLE !== 'undefined' && EMBEDDED_PEOPLE[state] && EMBEDDED_PEOPLE[state][session]) {
+      people = EMBEDDED_PEOPLE[state][session];
+    } else {
+      const resp = await fetch(STATE_DATA_BASE + '/' + state + '/' + session + '/people.json');
+      people = await resp.json();
+    }
+
+    stateMembers = people.map(p => ({
+      people_id: p.people_id,
+      name: p.name,
+      party: p.party,
+      partyName: p.party === 'D' ? 'Democratic' : p.party === 'R' ? 'Republican' : p.party === 'I' ? 'Independent' : p.party,
+      state: state,
+      chambers: [p.role === 'Sen' ? 'Senate' : 'House'],
+      district: p.district,
+      role: p.role,
+      searchStr: (p.name + ' ' + state + ' ' + p.party + ' ' + p.district + ' ' + (p.role === 'Sen' ? 'Senate' : 'House')).toLowerCase(),
+    }));
+
+    stateMembers.sort((a, b) => a.name.localeCompare(b.name));
+
+    $('status').className = 'status';
+    $('status').textContent = stateMembers.length + ' legislators loaded. Search above to get started.';
+  } catch(e) {
+    $('status').textContent = 'Error loading members: ' + e.message;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Search dropdown
 // ---------------------------------------------------------------------------
 function setupSearch() {
@@ -450,16 +545,20 @@ function setupSearch() {
     const q = input.value.toLowerCase().trim();
     if (q.length < 2) { dropdown.style.display = 'none'; return; }
 
-    const matches = allMembers.filter(m => m.searchStr.includes(q)).slice(0, 50);
+    const members = dataMode === 'federal' ? allMembers : stateMembers;
+    const matches = members.filter(m => m.searchStr.includes(q)).slice(0, 50);
     if (!matches.length) { dropdown.style.display = 'none'; return; }
 
     dropdown.innerHTML = matches.map((m, i) => {
-      const cRange = m.congresses.length ? `${m.congresses[0]}thâ${m.congresses[m.congresses.length-1]}th` : '';
-      const pClass = m.party === '100' ? 'tag-d' : m.party === '200' ? 'tag-r' : 'tag-i';
+      const cRange = m.congresses && m.congresses.length ? `${m.congresses[0]}th–${m.congresses[m.congresses.length-1]}th` : '';
+      const pClass = m.party === '100' || m.party === 'D' ? 'tag-d' : m.party === '200' || m.party === 'R' ? 'tag-r' : 'tag-i';
+      const infoText = dataMode === 'federal'
+        ? `${m.state} · ${m.chambers.join('/')} · ${cRange}`
+        : `${m.state} · ${m.role || m.chambers[0]} · ${m.district}`;
       return `<div style="padding:8px 12px; cursor:pointer; border-bottom:1px solid #f3f4f6; display:flex; justify-content:space-between; align-items:center;" data-idx="${i}"
                 onmouseover="this.style.background='#f0f4ff'" onmouseout="this.style.background='#fff'">
         <span><strong>${m.name}</strong> <span class="tag ${pClass}" style="font-size:11px;">${m.partyName}</span></span>
-        <span style="font-size:12px; color:#6b7280;">${m.state} Â· ${m.chambers.join('/')} Â· ${cRange}</span>
+        <span style="font-size:12px; color:#6b7280;">${infoText}</span>
       </div>`;
     }).join('');
 
@@ -485,23 +584,26 @@ function selectMember(m) {
   $('memberSearch').value = m.name;
   $('loadBtn').disabled = false;
 
-  // Populate congress dropdown
-  const sel = $('congressFilter');
-  sel.innerHTML = '<option value="">All</option>';
-  for (const c of m.congresses) {
-    sel.innerHTML += `<option value="${c}">${c}th</option>`;
+  if (dataMode === 'federal') {
+    const sel = $('congressFilter');
+    sel.innerHTML = '<option value="">All</option>';
+    if (m.congresses) {
+      for (const c of m.congresses) {
+        sel.innerHTML += `<option value="${c}">${c}th</option>`;
+      }
+    }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Load votes
+// Load votes (federal)
 // ---------------------------------------------------------------------------
 async function loadVotes() {
   if (!selectedMember) return;
   const m = selectedMember;
 
   $('loadBtn').disabled = true;
-  $('loadBtn').textContent = 'Loading â¦';
+  $('loadBtn').textContent = 'Loading ...';
   $('status').className = 'status loading';
   $('status').style.display = 'block';
   $('tableWrap').style.display = 'none';
@@ -526,7 +628,7 @@ async function loadVotes() {
     }
 
     // Find ICPSR(s) for this member from cached members data
-    $('status').textContent = 'Finding member IDs â¦';
+    $('status').textContent = 'Finding member IDs ...';
     const icpsrSet = new Set();
     for (const r of cachedMemberRows) {
       if (r.bioguide_id === m.bioguide_id) icpsrSet.add(r.icpsr);
@@ -536,7 +638,7 @@ async function loadVotes() {
     voteRecords = [];
     for (let i = 0; i < needed.length; i++) {
       const { congress, chamber } = needed[i];
-      $('status').textContent = `Loading votes: ${congress}th Congress ${chamber} (${i+1}/${needed.length}) â¦`;
+      $('status').textContent = `Loading votes: ${congress}th Congress ${chamber} (${i+1}/${needed.length}) ...`;
 
       const prefix = chamber === 'House' ? 'H' : 'S';
 
@@ -598,27 +700,21 @@ async function loadVotes() {
     $('filterBar').style.display = 'flex';
     $('csvBtn').style.display = 'inline-block';
 
-    // Run topic analysis
     if (otsModels.length) {
       matchVotesToTopics(voteRecords);
       renderTopicTable();
       $('topicPanel').style.display = 'block';
     }
 
-    // Run keyword analysis
     analyzeKeywords(voteRecords);
     renderKwTable();
     $('keywordPanel').style.display = 'block';
     activeKwFilter = null;
     $('activeKwFilter').style.display = 'none';
 
-    // Fetch bill summaries asynchronously (don't block the UI)
-    fetchAllSummaries(voteRecords);
-
   } catch(err) {
     $('status').className = 'status';
-    $('status').textContent = 'Error loading data: ' + err.message;
-    console.error(err);
+    $('status').textContent = 'Error loading votes: ' + err.message;
   }
 
   $('loadBtn').disabled = false;
@@ -626,7 +722,79 @@ async function loadVotes() {
 }
 
 // ---------------------------------------------------------------------------
-// Member card
+// Load votes (state legislature)
+// ---------------------------------------------------------------------------
+async function loadStateVotes() {
+  if (!selectedMember) return;
+  const m = selectedMember;
+
+  $('loadBtn').disabled = true;
+  $('loadBtn').textContent = 'Loading ...';
+  $('status').className = 'status loading';
+  $('status').textContent = 'Loading votes for ' + m.name + '...';
+  $('status').style.display = 'block';
+  $('tableWrap').style.display = 'none';
+  $('filterBar').style.display = 'none';
+  $('csvBtn').style.display = 'none';
+  $('topicPanel').style.display = 'none';
+  $('keywordPanel').style.display = 'none';
+
+  try {
+    if (typeof EMBEDDED_VOTES !== 'undefined' && EMBEDDED_VOTES[currentState] && EMBEDDED_VOTES[currentState][currentSession] && EMBEDDED_VOTES[currentState][currentSession][m.people_id]) {
+      voteRecords = EMBEDDED_VOTES[currentState][currentSession][m.people_id];
+    } else {
+      const url = STATE_DATA_BASE + '/' + currentState + '/' + currentSession + '/' + m.people_id + '.json';
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error('Vote data not found');
+      voteRecords = await resp.json();
+    }
+
+    // Normalize keywords: transform stores them as semicolon-separated strings
+    for (const r of voteRecords) {
+      if (typeof r.keywords === 'string') {
+        r.keywords = r.keywords.split(/;\s*/).filter(k => k);
+      }
+      if (!r.keywords) r.keywords = [];
+    }
+
+    // Sort by date descending
+    voteRecords.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+    // Show member card (state version)
+    showStateMemberCard(m, voteRecords);
+
+    filteredRecords = [...voteRecords];
+    sortCol = 'date'; sortAsc = false;
+    renderTable();
+
+    $('status').style.display = 'none';
+    $('tableWrap').style.display = 'block';
+    $('filterBar').style.display = 'flex';
+    $('csvBtn').style.display = 'inline-block';
+
+    if (otsModels.length) {
+      matchVotesToTopics(voteRecords);
+      renderTopicTable();
+      $('topicPanel').style.display = 'block';
+    }
+
+    analyzeKeywords(voteRecords);
+    renderKwTable();
+    $('keywordPanel').style.display = 'block';
+    activeKwFilter = null;
+    $('activeKwFilter').style.display = 'none';
+
+  } catch(err) {
+    $('status').className = 'status';
+    $('status').textContent = 'Error loading votes: ' + err.message;
+  }
+
+  $('loadBtn').disabled = false;
+  $('loadBtn').textContent = 'Load Votes';
+}
+
+// ---------------------------------------------------------------------------
+// Show member info cards
 // ---------------------------------------------------------------------------
 function showMemberCard(m, records) {
   $('memberCard').classList.add('visible');
@@ -637,610 +805,422 @@ function showMemberCard(m, records) {
   pTag.className = 'tag ' + (m.party === '100' ? 'tag-d' : m.party === '200' ? 'tag-r' : 'tag-i');
 
   $('memberState').textContent = m.state;
-  $('memberChambers').textContent = m.chambers.join(' / ');
-  $('memberCongress').textContent = `${m.congresses[0]}th â ${m.congresses[m.congresses.length-1]}th`;
+  $('memberChambers').textContent = m.chambers.join('/');
+  $('memberCongress').textContent = m.congresses.length ? `${m.congresses[0]}th–${m.congresses[m.congresses.length-1]}th` : '—';
   $('memberTotal').textContent = records.length.toLocaleString();
 
   const counts = {};
   for (const r of records) counts[r.member_vote] = (counts[r.member_vote] || 0) + 1;
   const parts = Object.entries(counts).sort((a,b) => b[1]-a[1]).map(([k,v]) => `${k}: <strong>${v.toLocaleString()}</strong>`);
-  $('voteBreakdown').innerHTML = parts.join(' Â· ');
+  $('voteBreakdown').innerHTML = parts.join(' · ');
 }
 
-// ---------------------------------------------------------------------------
-// Table rendering
-// ---------------------------------------------------------------------------
-function renderTable() {
-  const tbody = $('tableBody');
-  const rows = filteredRecords;
+function showStateMemberCard(m, records) {
+  $('memberCard').classList.add('visible');
+  $('memberName').textContent = m.name;
 
-  tbody.innerHTML = rows.map(r => {
-    const voteClass = r.member_vote === 'Yes' ? 'vote-yes' : r.member_vote === 'No' ? 'vote-no' : 'vote-other';
-    // Prefer bill summary over raw title; show short title as bold prefix if available
-    const desc = r.bill_summary || r.bill_title;
-    const prefix = r.bill_short_title && r.bill_short_title !== desc ? `<strong>${esc(r.bill_short_title)}</strong> â ` : '';
-    const fullTooltip = r.bill_summary ? r.bill_summary : r.bill_title;
-    return `<tr>
-      <td class="col-date">${r.date}</td>
-      <td class="col-bill">${r.bill_number}</td>
-      <td class="col-desc" title="${esc(fullTooltip)}">${prefix}${esc(desc)}</td>
-      <td class="col-vote ${voteClass}">${r.member_vote}</td>
-      <td class="col-result">${r.vote_result}</td>
-      <td class="col-chamber">${r.chamber}</td>
-      <td title="${esc(r.vote_question)}">${esc(r.vote_question)}</td>
-      <td class="col-keywords" title="${esc(r.keywords)}">${esc(r.keywords)}</td>
-    </tr>`;
-  }).join('');
+  const pTag = $('memberParty');
+  pTag.textContent = m.partyName;
+  pTag.className = 'tag ' + (m.party === 'D' ? 'tag-d' : m.party === 'R' ? 'tag-r' : 'tag-i');
 
-  $('rowCount').textContent = `${rows.length.toLocaleString()} votes`;
-}
+  $('memberState').textContent = m.state + ' ' + (m.district || '');
+  $('memberChambers').textContent = m.role || m.chambers[0];
+  $('memberCongress').textContent = currentSession + ' Session';
+  $('memberTotal').textContent = records.length.toLocaleString();
 
-function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-
-// ---------------------------------------------------------------------------
-// Sorting
-// ---------------------------------------------------------------------------
-function setupSorting() {
-  document.querySelectorAll('th[data-col]').forEach(th => {
-    th.addEventListener('click', () => {
-      const col = th.dataset.col;
-      if (sortCol === col) sortAsc = !sortAsc;
-      else { sortCol = col; sortAsc = true; }
-
-      filteredRecords.sort((a,b) => {
-        const va = (a[col]||'').toLowerCase(), vb = (b[col]||'').toLowerCase();
-        return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
-      });
-
-      // Update arrows
-      document.querySelectorAll('.sort-arrow').forEach(s => s.textContent = '');
-      th.querySelector('.sort-arrow').textContent = sortAsc ? ' â²' : ' â¼';
-
-      renderTable();
-    });
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Table filtering
-// ---------------------------------------------------------------------------
-function setupFiltering() {
-  const search = $('tableSearch');
-  const voteFilter = $('voteFilter');
-
-  function applyFilters() {
-    const q = search.value.toLowerCase().trim();
-    const vf = voteFilter.value;
-
-    filteredRecords = voteRecords.filter(r => {
-      if (vf && r.member_vote !== vf) return false;
-      if (q) {
-        const haystack = (r.bill_number + ' ' + r.bill_title + ' ' + r.keywords + ' ' + r.vote_question + ' ' + r.vote_result).toLowerCase();
-        return haystack.includes(q);
-      }
-      return true;
-    });
-
-    renderTable();
-  }
-
-  search.addEventListener('input', applyFilters);
-  voteFilter.addEventListener('change', applyFilters);
-}
-
-// ---------------------------------------------------------------------------
-// CSV download
-// ---------------------------------------------------------------------------
-function downloadCSV() {
-  const fields = ['date','bill_number','bill_summary','bill_title','vote_question','vote_result','member_vote','congress','session','roll_call','chamber','keywords'];
-  const header = fields.join(',');
-  const rows = filteredRecords.map(r =>
-    fields.map(f => {
-      let v = (r[f] || '').toString();
-      if (v.includes(',') || v.includes('"') || v.includes('\n')) v = '"' + v.replace(/"/g, '""') + '"';
-      return v;
-    }).join(',')
-  );
-  const csv = header + '\n' + rows.join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  const name = selectedMember ? selectedMember.name.replace(/[^a-zA-Z]/g, '_') + '_votes.csv' : 'votes.csv';
-  a.href = url; a.download = name; a.click();
-  URL.revokeObjectURL(url);
+  const counts = {};
+  for (const r of records) counts[r.member_vote] = (counts[r.member_vote] || 0) + 1;
+  const parts = Object.entries(counts).sort((a,b) => b[1]-a[1]).map(([k,v]) => `${k}: <strong>${v.toLocaleString()}</strong>`);
+  $('voteBreakdown').innerHTML = parts.join(' · ');
 }
 
 // ---------------------------------------------------------------------------
 // Keyword extraction
 // ---------------------------------------------------------------------------
 function extractKeywords(text) {
-  if (!text) return '';
-  const words = text.toLowerCase().split(/\s+/);
-  const seen = new Set(); const out = [];
-  for (let w of words) {
-    w = w.replace(/^[.,;:()\[\]"'-]+|[.,;:()\[\]"'-]+$/g, '');
-    if (w.length > 2 && !STOP.has(w) && !seen.has(w)) { seen.add(w); out.push(w); }
-  }
-  return out.slice(0, 12).join('; ');
+  if (!text) return [];
+  const words = text.toLowerCase().split(/\W+/).filter(w => w.length > 3 && !STOP.has(w));
+  return [...new Set(words)];
 }
 
 // ---------------------------------------------------------------------------
-// Bill Summary Fetching (Congress.gov API)
+// Render vote table
 // ---------------------------------------------------------------------------
+let pageSize = 50;
+let currentPage = 0;
 
-// Parse VoteView bill_number (e.g. "S5", "HR1234", "HJRES45") into API params
-function parseBillNumber(billNum, congress) {
-  if (!billNum) return null;
-  const bn = billNum.trim().toUpperCase();
+function renderTable() {
+  const tbody = $('tableBody');
+  tbody.innerHTML = '';
 
-  const patterns = [
-    { re: /^S\.?\s*(\d+)$/i, type: 's' },
-    { re: /^H\.?R\.?\s*(\d+)$/i, type: 'hr' },
-    { re: /^H\.?\s*J\.?\s*RES\.?\s*(\d+)$/i, type: 'hjres' },
-    { re: /^S\.?\s*J\.?\s*RES\.?\s*(\d+)$/i, type: 'sjres' },
-    { re: /^H\.?\s*RES\.?\s*(\d+)$/i, type: 'hres' },
-    { re: /^S\.?\s*RES\.?\s*(\d+)$/i, type: 'sres' },
-    { re: /^H\.?\s*CON\.?\s*RES\.?\s*(\d+)$/i, type: 'hconres' },
-    { re: /^S\.?\s*CON\.?\s*RES\.?\s*(\d+)$/i, type: 'sconres' },
-  ];
+  // Apply filters
+  let filtered = [...filteredRecords];
+  const tableSearch = $('tableSearch').value.toLowerCase();
+  const voteFilter = $('voteFilter').value;
 
-  for (const p of patterns) {
-    const m = bn.match(p.re);
-    if (m) return { congress, type: p.type, number: m[1] };
-  }
-  return null;
-}
+  filtered = filtered.filter(r => {
+    if (tableSearch && !([r.bill_number, r.bill_title, r.vote_question, (r.keywords||[]).join(' ')].join(' ').toLowerCase().includes(tableSearch))) return false;
+    if (voteFilter && r.member_vote !== voteFilter) return false;
+    return true;
+  });
 
-// Strip HTML tags from summary text
-function stripHTML(html) {
-  return (html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-}
+  // Pagination
+  currentPage = 0;
+  const pages = Math.ceil(filtered.length / pageSize);
+  const start = currentPage * pageSize;
+  const end = Math.min(start + pageSize, filtered.length);
+  const pageRecords = filtered.slice(start, end);
 
-// Fetch a single bill summary with retry/throttle
-async function fetchBillSummary(parsed) {
-  const cacheKey = `${parsed.congress}/${parsed.type}/${parsed.number}`;
-  if (summaryCache[cacheKey]) return summaryCache[cacheKey];
-
-  try {
-    const url = `${CONGRESS_API}/bill/${parsed.congress}/${parsed.type}/${parsed.number}/summaries?api_key=${CONGRESS_API_KEY}&format=json`;
-    const resp = await smartFetch(url);
-    if (!resp.ok) throw new Error('status ' + resp.status);
-    const data = await resp.json();
-
-    let summary = '';
-    let title = '';
-
-    if (data.summaries && data.summaries.length > 0) {
-      // Pick the most detailed summary (last one is usually the most advanced version)
-      const best = data.summaries[data.summaries.length - 1];
-      summary = stripHTML(best.text);
-    }
-
-    // Also try to get the short title from the bill endpoint
-    try {
-      const billUrl = `${CONGRESS_API}/bill/${parsed.congress}/${parsed.type}/${parsed.number}?api_key=${CONGRESS_API_KEY}&format=json`;
-      const billResp = await smartFetch(billUrl);
-      if (billResp.ok) {
-        const billData = await billResp.json();
-        title = billData.bill?.title || '';
-      }
-    } catch(e) { /* skip */ }
-
-    const result = { title, summary: summary || title };
-    summaryCache[cacheKey] = result;
-    return result;
-  } catch(e) {
-    summaryCache[cacheKey] = null;
-    return null;
-  }
-}
-
-// Fetch summaries for all unique bills and update the table progressively
-async function fetchAllSummaries(records) {
-  // Collect unique bill numbers
-  const uniqueBills = new Map(); // bill_number â {parsed, congress}
-  for (const r of records) {
-    if (!r.bill_number || uniqueBills.has(r.bill_number + '|' + r.congress)) continue;
-    const parsed = parseBillNumber(r.bill_number, r.congress);
-    if (parsed) uniqueBills.set(r.bill_number + '|' + r.congress, parsed);
+  for (const r of pageRecords) {
+    const row = document.createElement('tr');
+    const voteClass = r.member_vote === 'Yes' || r.member_vote === 'Yea' ? 'vote-yes' : r.member_vote === 'No' || r.member_vote === 'Nay' ? 'vote-no' : 'vote-other';
+    row.innerHTML = `
+      <td class="col-date">${r.date}</td>
+      <td class="col-bill">${r.bill_number}</td>
+      <td class="col-desc" title="${r.bill_title}">${r.bill_title}</td>
+      <td class="col-vote ${voteClass}">${r.member_vote}</td>
+      <td class="col-result">${r.vote_result}</td>
+      <td class="col-chamber">${r.chamber}</td>
+      <td>${r.vote_question}</td>
+      <td class="col-keywords">${(r.keywords || []).slice(0,3).join(', ')}</td>
+    `;
+    tbody.appendChild(row);
   }
 
-  const total = uniqueBills.size;
-  if (total === 0) return;
-
-  let done = 0;
-  const statusEl = $('summaryStatus');
-  if (statusEl) {
-    statusEl.style.display = 'inline';
-    statusEl.textContent = `Loading bill summaries: 0/${total}`;
-  }
-
-  // Process in batches of 3 with a small delay to respect rate limits
-  const entries = [...uniqueBills.entries()];
-  for (let i = 0; i < entries.length; i += 3) {
-    const batch = entries.slice(i, i + 3);
-    await Promise.all(batch.map(async ([key, parsed]) => {
-      const result = await fetchBillSummary(parsed);
-      done++;
-      if (statusEl) statusEl.textContent = `Loading bill summaries: ${done}/${total}`;
-
-      if (result) {
-        // Update all matching records
-        const [billNum, congress] = key.split('|');
-        for (const r of records) {
-          if (r.bill_number === billNum && r.congress === congress) {
-            r.bill_summary = result.summary;
-            if (result.title) r.bill_short_title = result.title;
-          }
-        }
-      }
-    }));
-
-    // Re-render table every 10 bills to show progress
-    if (done % 10 === 0 || done === total) {
-      renderTable();
-    }
-
-    // Small throttle delay
-    if (i + 3 < entries.length) {
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
-  }
-
-  // Final render
-  renderTable();
-  if (statusEl) {
-    statusEl.textContent = `${done} bill summaries loaded`;
-    setTimeout(() => { statusEl.style.display = 'none'; }, 3000);
-  }
+  $('rowCount').textContent = `Showing ${pageRecords.length} of ${filtered.length} votes`;
+  $('pageInfo').textContent = `Page ${currentPage + 1} of ${pages}`;
 }
 
 // ---------------------------------------------------------------------------
-// OTS Model loading (from Google Sheet)
+// Setup sorting
 // ---------------------------------------------------------------------------
-async function loadOTSModels() {
-  try {
-    const resp = await smartFetch(OTS_CSV_URL);
-    const text = await resp.text();
-    const lines = text.split('\n');
-    otsModels = [];
-    for (let i = 1; i < lines.length; i++) { // skip header rows
-      const name = lines[i].trim().replace(/^"|"$/g, '');
-      if (name && name !== 'Model Name' && name !== 'OTS Inventory Catalog') {
-        otsModels.push(name);
-      }
-    }
-    console.log(`Loaded ${otsModels.length} OTS models from Google Sheet`);
-  } catch(e) {
-    // Fall back to hardcoded list from TOPIC_KEYWORDS
-    otsModels = Object.keys(TOPIC_KEYWORDS);
-    console.log(`Using hardcoded ${otsModels.length} OTS models (Sheet fetch failed: ${e.message})`);
-  }
-}
+function setupSorting() {
+  document.querySelectorAll('th[data-col]').forEach(th => {
+    th.addEventListener('click', () => {
+      const col = th.dataset.col;
+      if (sortCol === col) sortAsc = !sortAsc;
+      else { sortCol = col; sortAsc = false; }
 
-// ---------------------------------------------------------------------------
-// Topic matching: compare vote records against OTS model keywords
-// ---------------------------------------------------------------------------
-function matchVotesToTopics(records) {
-  topicResults = [];
-
-  for (const model of otsModels) {
-    const keywords = TOPIC_KEYWORDS[model];
-    if (!keywords || !keywords.length) {
-      topicResults.push({ model, total: 0, yes: 0, no: 0, other: 0, matchedKeywords: new Set(), matchedVotes: [] });
-      continue;
-    }
-
-    let total = 0, yes = 0, no = 0, other = 0;
-    const matchedKW = new Set();
-    const matchedVotes = [];
-
-    for (const r of records) {
-      const haystack = (r.bill_title + ' ' + r.bill_number + ' ' + r.vote_question + ' ' + r.keywords).toLowerCase();
-      let matched = false;
-
-      for (const kw of keywords) {
-        // Use word boundary matching for short keywords to avoid false positives
-        let found = false;
-        if (kw.length <= 3) {
-          const regex = new RegExp('\\b' + kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
-          found = regex.test(haystack);
-        } else {
-          found = haystack.includes(kw);
-        }
-
-        if (found) {
-          matched = true;
-          matchedKW.add(kw);
-        }
-      }
-
-      if (matched) {
-        total++;
-        if (r.member_vote === 'Yes') yes++;
-        else if (r.member_vote === 'No') no++;
-        else other++;
-        matchedVotes.push(r);
-      }
-    }
-
-    topicResults.push({ model, total, yes, no, other, matchedKeywords: matchedKW, matchedVotes });
-  }
-
-  // Sort by total descending by default
-  topicSortCol = 'total';
-  topicSortAsc = false;
-  topicResults.sort((a, b) => b.total - a.total);
-}
-
-// ---------------------------------------------------------------------------
-// Render topic analysis table
-// ---------------------------------------------------------------------------
-function renderTopicTable() {
-  const minVotes = parseInt($('minTopicVotes').value) || 0;
-  const tbody = $('topicBody');
-  const filtered = topicResults.filter(t => t.total >= minVotes);
-
-  tbody.innerHTML = filtered.map(t => {
-    const kwList = Array.from(t.matchedKeywords).slice(0, 8).map(k => `<span class="topic-bar">${esc(k)}</span>`).join('');
-    const totalClass = t.total === 0 ? 'topic-zero' : '';
-    return `<tr>
-      <td style="font-weight:500;">${esc(t.model)}</td>
-      <td class="${totalClass}" style="font-weight:600;">${t.total}</td>
-      <td class="topic-count-yes">${t.yes || ''}</td>
-      <td class="topic-count-no">${t.no || ''}</td>
-      <td style="color:var(--muted);">${t.other || ''}</td>
-      <td>${kwList}</td>
-    </tr>`;
-  }).join('');
-}
-
-function setupTopicSorting() {
-  const cols = { thTopicName: 'model', thTopicTotal: 'total', thTopicYes: 'yes', thTopicNo: 'no' };
-  for (const [id, key] of Object.entries(cols)) {
-    $(id).addEventListener('click', () => {
-      if (topicSortCol === key) topicSortAsc = !topicSortAsc;
-      else { topicSortCol = key; topicSortAsc = key === 'model'; }
-
-      topicResults.sort((a, b) => {
-        const va = key === 'model' ? a.model.toLowerCase() : a[key];
-        const vb = key === 'model' ? b.model.toLowerCase() : b[key];
-        if (key === 'model') return topicSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
-        return topicSortAsc ? va - vb : vb - va;
+      filteredRecords.sort((a, b) => {
+        const aVal = a[sortCol] || '';
+        const bVal = b[sortCol] || '';
+        const cmp = String(aVal).localeCompare(String(bVal));
+        return sortAsc ? cmp : -cmp;
       });
 
-      // Clear all topic sort arrows then set active one
-      ['topicSortArrow','totalSortArrow','yesSortArrow','noSortArrow'].forEach(a => $(a).textContent = '');
-      const arrowId = id.replace('thTopic','').replace('th','');
-      const arrowEl = $(id).querySelector('.sort-arrow');
-      if (arrowEl) arrowEl.textContent = topicSortAsc ? ' â²' : ' â¼';
-
-      renderTopicTable();
+      renderTable();
     });
-  }
+  });
 }
 
-function downloadTopicCSV() {
-  const minVotes = parseInt($('minTopicVotes').value) || 0;
-  const filtered = topicResults.filter(t => t.total >= minVotes);
-  const header = 'Model Topic,Total Votes,Yes,No,Other,Matched Keywords';
-  const rows = filtered.map(t => {
-    const kw = Array.from(t.matchedKeywords).join('; ');
-    return `${csvVal(t.model)},${t.total},${t.yes},${t.no},${t.other},${csvVal(kw)}`;
-  });
-  const csv = header + '\n' + rows.join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
+// ---------------------------------------------------------------------------
+// Setup filtering
+// ---------------------------------------------------------------------------
+function setupFiltering() {
+  $('tableSearch').addEventListener('input', () => renderTable());
+  $('voteFilter').addEventListener('change', () => renderTable());
+}
+
+// ---------------------------------------------------------------------------
+// Download CSV
+// ---------------------------------------------------------------------------
+$('csvBtn').addEventListener('click', () => {
+  const csv = [['Date', 'Bill', 'Description', 'Vote', 'Result', 'Chamber', 'Question', 'Keywords']];
+  for (const r of filteredRecords) {
+    csv.push([r.date, r.bill_number, r.bill_title, r.member_vote, r.vote_result, r.chamber, r.vote_question, (r.keywords||[]).join(';')]);
+  }
+  const text = csv.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([text], {type: 'text/csv'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  const name = selectedMember ? selectedMember.name.replace(/[^a-zA-Z]/g, '_') + '_topic_analysis.csv' : 'topic_analysis.csv';
-  a.href = url; a.download = name; a.click();
+  a.href = url;
+  a.download = 'votes.csv';
+  a.click();
   URL.revokeObjectURL(url);
-}
-
-function csvVal(v) {
-  v = (v || '').toString();
-  if (v.includes(',') || v.includes('"') || v.includes('\n')) return '"' + v.replace(/"/g, '""') + '"';
-  return v;
-}
+});
 
 // ---------------------------------------------------------------------------
-// Keyword Analysis: extract all keywords, count Yes/No per keyword
+// OTS Model matching and keyword analysis
 // ---------------------------------------------------------------------------
-let kwResults = []; // [{keyword, total, yes, no, other, yesPct, models}]
+let keywordResults = []; // [{keyword, total, yes, no, other, percentage, models}]
 let kwSortCol = 'total';
 let kwSortAsc = false;
-let activeKwFilter = null; // currently active keyword filter on vote table
+let activeKwFilter = null;
 
-// Build a reverse map: keyword â which OTS models it belongs to
-function buildKwToModelMap() {
-  const map = {};
-  for (const [model, keywords] of Object.entries(TOPIC_KEYWORDS)) {
-    for (const kw of keywords) {
-      if (!map[kw]) map[kw] = [];
-      map[kw].push(model);
+async function loadOTSModels() {
+  try {
+    const resp = await fetch(OTS_CSV_URL);
+    const text = await resp.text();
+    const rows = parseCSV(text);
+    otsModels = rows.map(r => r.model).filter(m => m);
+  } catch(e) {
+    console.warn('Could not load OTS models:', e);
+  }
+}
+
+function matchVotesToTopics(records) {
+  topicResults = [];
+  for (const model of otsModels) {
+    const keywords = TOPIC_KEYWORDS[model] || [];
+    let total = 0, yes = 0, no = 0, other = 0;
+    const matched = new Set();
+
+    for (const r of records) {
+      const desc = (r.bill_title + ' ' + (r.keywords || []).join(' ')).toLowerCase();
+      for (const kw of keywords) {
+        if (desc.includes(kw)) {
+          total++;
+          if (r.member_vote === 'Yes' || r.member_vote === 'Yea') yes++;
+          else if (r.member_vote === 'No' || r.member_vote === 'Nay') no++;
+          else other++;
+          matched.add(kw);
+          break;
+        }
+      }
+    }
+
+    if (total > 0) {
+      topicResults.push({ model, total, yes, no, other, matchedKeywords: Array.from(matched).sort() });
     }
   }
-  return map;
+
+  topicSortCol = 'total';
+  topicSortAsc = false;
 }
 
 function analyzeKeywords(records) {
-  const kwMap = {}; // keyword â {total, yes, no, other}
-
+  const kwCounts = {};
   for (const r of records) {
-    // Use broader keyword extraction â pull from bill title, question, and bill number
-    const text = (r.bill_title + ' ' + r.vote_question).toLowerCase();
-    const words = text.split(/\s+/);
-    const seen = new Set();
+    for (const kw of (r.keywords || [])) {
+      if (!kwCounts[kw]) kwCounts[kw] = { keyword: kw, yes: 0, no: 0, other: 0, models: new Set() };
+      if (r.member_vote === 'Yes' || r.member_vote === 'Yea') kwCounts[kw].yes++;
+      else if (r.member_vote === 'No' || r.member_vote === 'Nay') kwCounts[kw].no++;
+      else kwCounts[kw].other++;
 
-    for (let w of words) {
-      w = w.replace(/^[.,;:()\[\]"'ââ-]+|[.,;:()\[\]"'ââ-]+$/g, '');
-      if (w.length <= 2 || STOP.has(w) || seen.has(w)) continue;
-      seen.add(w);
-
-      if (!kwMap[w]) kwMap[w] = { total: 0, yes: 0, no: 0, other: 0 };
-      kwMap[w].total++;
-      if (r.member_vote === 'Yes') kwMap[w].yes++;
-      else if (r.member_vote === 'No') kwMap[w].no++;
-      else kwMap[w].other++;
-    }
-
-    // Also check for multi-word phrases from TOPIC_KEYWORDS
-    for (const keywords of Object.values(TOPIC_KEYWORDS)) {
-      for (const phrase of keywords) {
-        if (phrase.includes(' ') && text.includes(phrase)) {
-          if (!kwMap[phrase]) kwMap[phrase] = { total: 0, yes: 0, no: 0, other: 0 };
-          // Only count once per vote per phrase
-          const key = phrase + '|' + r.roll_call + '|' + r.congress;
-          if (!seen.has(key)) {
-            seen.add(key);
-            kwMap[phrase].total++;
-            if (r.member_vote === 'Yes') kwMap[phrase].yes++;
-            else if (r.member_vote === 'No') kwMap[phrase].no++;
-            else kwMap[phrase].other++;
-          }
-        }
+      // Attach model tags
+      for (const model of otsModels) {
+        const keywords = TOPIC_KEYWORDS[model] || [];
+        if (keywords.includes(kw)) kwCounts[kw].models.add(model);
       }
     }
   }
 
-  const kwToModel = buildKwToModelMap();
-
-  kwResults = Object.entries(kwMap).map(([keyword, d]) => ({
-    keyword,
-    total: d.total,
-    yes: d.yes,
-    no: d.no,
-    other: d.other,
-    yesPct: d.total > 0 ? Math.round((d.yes / d.total) * 100) : 0,
-    models: kwToModel[keyword] || [],
+  keywordResults = Object.values(kwCounts).map(kw => ({
+    ...kw,
+    total: kw.yes + kw.no + kw.other,
+    percentage: ((kw.yes / (kw.yes + kw.no)) * 100).toFixed(1),
+    models: Array.from(kw.models),
   }));
 
   kwSortCol = 'total';
   kwSortAsc = false;
-  kwResults.sort((a, b) => b.total - a.total);
 }
 
-function renderKwTable() {
-  const minVotes = parseInt($('minKwVotes').value) || 1;
-  const search = ($('kwSearch').value || '').toLowerCase().trim();
-  const tbody = $('kwBody');
+function renderTopicTable() {
+  const tbody = $('topicBody');
+  tbody.innerHTML = '';
 
-  const filtered = kwResults.filter(k => {
-    if (k.total < minVotes) return false;
-    if (search && !k.keyword.includes(search)) return false;
-    return true;
+  const minVotes = parseInt($('minTopicVotes').value) || 0;
+  const filtered = topicResults.filter(t => t.total >= minVotes);
+
+  filtered.sort((a, b) => {
+    const aVal = a[topicSortCol];
+    const bVal = b[topicSortCol];
+    const cmp = aVal - bVal;
+    return topicSortAsc ? cmp : -cmp;
   });
 
-  tbody.innerHTML = filtered.slice(0, 300).map(k => {
-    const pctWidth = Math.max(k.yesPct, 2);
-    const noPct = k.total > 0 ? Math.round((k.no / k.total) * 100) : 0;
-    const modelTags = k.models.slice(0, 3).map(m => `<span class="kw-model-tag">${esc(m)}</span>`).join('');
-    const moreTag = k.models.length > 3 ? `<span class="kw-model-tag">+${k.models.length - 3}</span>` : '';
-    return `<tr class="kw-row" data-kw="${esc(k.keyword)}">
-      <td class="kw-name">${esc(k.keyword)}</td>
-      <td style="font-weight:600;">${k.total}</td>
-      <td class="topic-count-yes">${k.yes}</td>
-      <td class="topic-count-no">${k.no}</td>
-      <td style="color:var(--muted);">${k.other || ''}</td>
-      <td>
-        <span class="kw-pct-bar" style="width:${pctWidth}px; background:#059669;"></span>
-        <span class="kw-pct-bar" style="width:${noPct}px; background:#dc2626;"></span>
-        <span style="font-size:11px; color:var(--muted); margin-left:4px;">${k.yesPct}% yes</span>
-      </td>
-      <td>${modelTags}${moreTag}</td>
-    </tr>`;
-  }).join('');
-
-  // Add click handlers for each row
-  tbody.querySelectorAll('.kw-row').forEach(row => {
-    row.addEventListener('click', () => {
-      const kw = row.dataset.kw;
-      filterVotesByKeyword(kw);
-    });
-  });
-}
-
-function filterVotesByKeyword(kw) {
-  activeKwFilter = kw;
-  $('tableSearch').value = kw;
-  $('activeKwName').textContent = kw;
-  $('activeKwFilter').style.display = 'inline-flex';
-
-  // Trigger the table filter
-  const evt = new Event('input', { bubbles: true });
-  $('tableSearch').dispatchEvent(evt);
-
-  // Scroll to vote table
-  $('filterBar').scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-function clearKwFilter() {
-  activeKwFilter = null;
-  $('tableSearch').value = '';
-  $('activeKwFilter').style.display = 'none';
-  const evt = new Event('input', { bubbles: true });
-  $('tableSearch').dispatchEvent(evt);
-}
-
-function setupKwSorting() {
-  const cols = { thKwName: 'keyword', thKwTotal: 'total', thKwYes: 'yes', thKwNo: 'no' };
-  for (const [id, key] of Object.entries(cols)) {
-    $(id).addEventListener('click', () => {
-      if (kwSortCol === key) kwSortAsc = !kwSortAsc;
-      else { kwSortCol = key; kwSortAsc = key === 'keyword'; }
-
-      kwResults.sort((a, b) => {
-        const va = key === 'keyword' ? a.keyword : a[key];
-        const vb = key === 'keyword' ? b.keyword : b[key];
-        if (key === 'keyword') return kwSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
-        return kwSortAsc ? va - vb : vb - va;
-      });
-
-      ['kwNameArrow','kwTotalArrow','kwYesArrow','kwNoArrow'].forEach(a => $(a).textContent = '');
-      const arrowEl = $(id).querySelector('.sort-arrow');
-      if (arrowEl) arrowEl.textContent = kwSortAsc ? ' â²' : ' â¼';
-
-      renderKwTable();
-    });
+  for (const t of filtered) {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td style="font-weight:500;">${t.model}</td>
+      <td><strong>${t.total}</strong></td>
+      <td><strong class="topic-count-yes">${t.yes}</strong></td>
+      <td><strong class="topic-count-no">${t.no}</strong></td>
+      <td>${t.other}</td>
+      <td>${t.matchedKeywords.map(kw => `<span class="topic-bar">${kw}</span>`).join('')}</td>
+    `;
+    tbody.appendChild(row);
   }
 }
 
-function downloadKwCSV() {
+function renderKwTable() {
+  const tbody = $('kwBody');
+  tbody.innerHTML = '';
+
   const minVotes = parseInt($('minKwVotes').value) || 1;
-  const search = ($('kwSearch').value || '').toLowerCase().trim();
-  const filtered = kwResults.filter(k => k.total >= minVotes && (!search || k.keyword.includes(search)));
-  const header = 'Keyword,Total Votes,Yes,No,Other,Yes %,OTS Models';
-  const rows = filtered.map(k =>
-    `${csvVal(k.keyword)},${k.total},${k.yes},${k.no},${k.other},${k.yesPct}%,${csvVal(k.models.join('; '))}`
-  );
-  const csv = header + '\n' + rows.join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
+  const searchText = $('kwSearch').value.toLowerCase();
+  let filtered = keywordResults.filter(kw => kw.total >= minVotes && kw.keyword.includes(searchText));
+
+  filtered.sort((a, b) => {
+    const aVal = a[kwSortCol];
+    const bVal = b[kwSortCol];
+    if (typeof aVal === 'number') return (kwSortAsc ? aVal - bVal : bVal - aVal);
+    return (kwSortAsc ? String(aVal).localeCompare(String(bVal)) : String(bVal).localeCompare(String(aVal)));
+  });
+
+  for (const kw of filtered) {
+    const row = document.createElement('tr');
+    row.className = 'kw-row';
+    const pctWidth = kw.yes / (kw.yes + kw.no) * 100;
+    row.innerHTML = `
+      <td class="kw-name">${kw.keyword}</td>
+      <td><strong>${kw.total}</strong></td>
+      <td><strong class="topic-count-yes">${kw.yes}</strong></td>
+      <td><strong class="topic-count-no">${kw.no}</strong></td>
+      <td>${kw.other}</td>
+      <td><span class="kw-pct-bar" style="width:${pctWidth}px; background:#059669; opacity:0.5;"></span> ${kw.percentage}%</td>
+      <td>${kw.models.map(m => `<span class="kw-model-tag">${m}</span>`).join('')}</td>
+    `;
+    row.addEventListener('click', () => filterByKeyword(kw.keyword));
+    tbody.appendChild(row);
+  }
+}
+
+function filterByKeyword(keyword) {
+  activeKwFilter = keyword;
+  $('activeKwName').textContent = keyword;
+  $('activeKwFilter').style.display = 'inline-flex';
+  filteredRecords = voteRecords.filter(r => (r.keywords || []).includes(keyword));
+  renderTable();
+}
+
+// ---------------------------------------------------------------------------
+// Setup sorting for topics and keywords
+// ---------------------------------------------------------------------------
+function setupTopicSorting() {
+  const columns = [
+    { th: $('thTopicName'), col: 'model' },
+    { th: $('thTopicTotal'), col: 'total' },
+    { th: $('thTopicYes'), col: 'yes' },
+    { th: $('thTopicNo'), col: 'no' },
+  ];
+  columns.forEach(({ th, col }) => {
+    th.addEventListener('click', () => {
+      if (topicSortCol === col) topicSortAsc = !topicSortAsc;
+      else { topicSortCol = col; topicSortAsc = false; }
+      renderTopicTable();
+    });
+  });
+}
+
+function setupKwSorting() {
+  const columns = [
+    { th: $('thKwName'), col: 'keyword' },
+    { th: $('thKwTotal'), col: 'total' },
+    { th: $('thKwYes'), col: 'yes' },
+    { th: $('thKwNo'), col: 'no' },
+  ];
+  columns.forEach(({ th, col }) => {
+    th.addEventListener('click', () => {
+      if (kwSortCol === col) kwSortAsc = !kwSortAsc;
+      else { kwSortCol = col; kwSortAsc = false; }
+      renderKwTable();
+    });
+  });
+  $('minTopicVotes').addEventListener('change', renderTopicTable);
+  $('minKwVotes').addEventListener('change', renderKwTable);
+  $('kwSearch').addEventListener('input', renderKwTable);
+}
+
+$('topicCsvBtn').addEventListener('click', () => {
+  const csv = [['Model', 'Total', 'Yes', 'No', 'Other', 'Keywords']];
+  for (const t of topicResults) {
+    csv.push([t.model, t.total, t.yes, t.no, t.other, t.matchedKeywords.join(';')]);
+  }
+  const text = csv.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([text], {type: 'text/csv'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  const name = selectedMember ? selectedMember.name.replace(/[^a-zA-Z]/g, '_') + '_keyword_analysis.csv' : 'keyword_analysis.csv';
-  a.href = url; a.download = name; a.click();
+  a.href = url;
+  a.download = 'topics.csv';
+  a.click();
   URL.revokeObjectURL(url);
+});
+
+$('kwCsvBtn').addEventListener('click', () => {
+  const csv = [['Keyword', 'Total', 'Yes', 'No', 'Other', 'Yes %', 'Models']];
+  for (const kw of keywordResults) {
+    csv.push([kw.keyword, kw.total, kw.yes, kw.no, kw.other, kw.percentage, kw.models.join(';')]);
+  }
+  const text = csv.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([text], {type: 'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'keywords.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+$('clearKwFilter').addEventListener('click', () => {
+  activeKwFilter = null;
+  $('activeKwFilter').style.display = 'none';
+  filteredRecords = [...voteRecords];
+  renderTable();
+});
+
+// ---------------------------------------------------------------------------
+// Data source toggle
+// ---------------------------------------------------------------------------
+function setupDataSourceToggle() {
+  const ds = $('dataSource');
+  ds.addEventListener('change', () => {
+    dataMode = ds.value;
+    // Show/hide relevant controls
+    $('congressFilter').parentElement.style.display = dataMode === 'federal' ? '' : 'none';
+    $('stateControls').style.display = dataMode === 'state' ? '' : 'none';
+    $('sessionControls').style.display = dataMode === 'state' ? '' : 'none';
+    // Reset
+    selectedMember = null;
+    $('memberSearch').value = '';
+    $('loadBtn').disabled = true;
+    $('tableWrap').style.display = 'none';
+    $('filterBar').style.display = 'none';
+    $('topicPanel').style.display = 'none';
+    $('keywordPanel').style.display = 'none';
+    $('memberCard').classList.remove('visible');
+
+    if (dataMode === 'state') {
+      loadStateSessions();
+    } else {
+      if (!allMembers.length) loadMembers();
+      else $('status').textContent = allMembers.length.toLocaleString() + ' members loaded. Search above to get started.';
+    }
+  });
 }
+
+// State/session handlers
+$('stateSelect').addEventListener('change', () => {
+  const state = $('stateSelect').value;
+  const sessionSel = $('sessionSelect');
+  sessionSel.innerHTML = '<option value="">Select session...</option>';
+  if (state && stateSessions && stateSessions[state]) {
+    for (const s of stateSessions[state].sessions) {
+      sessionSel.innerHTML += `<option value="${s.id}">${s.name}</option>`;
+    }
+  }
+});
+
+$('sessionSelect').addEventListener('change', loadStateMembers);
+
+// Load button handler
+$('loadBtn').addEventListener('click', () => {
+  if (dataMode === 'federal') loadVotes();
+  else loadStateVotes();
+});
 
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 async function init() {
-  // Load members and OTS models in parallel
   await Promise.all([loadMembers(), loadOTSModels()]);
   setupSearch();
   setupSorting();
   setupFiltering();
   setupTopicSorting();
   setupKwSorting();
-  $('loadBtn').addEventListener('click', loadVotes);
-  $('csvBtn').addEventListener('click', downloadCSV);
-  $('topicCsvBtn').addEventListener('click', downloadTopicCSV);
-  $('kwCsvBtn').addEventListener('click', downloadKwCSV);
-  $('minTopicVotes').addEventListener('input', renderTopicTable);
-  $('minKwVotes').addEventListener('input', renderKwTable);
-  $('kwSearch').addEventListener('input', renderKwTable);
-  $('clearKwFilter').addEventListener('click', clearKwFilter);
+  setupDataSourceToggle();
 }
 
 init();
