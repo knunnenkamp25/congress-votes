@@ -1001,10 +1001,11 @@ function analyzeKeywords(records) {
       else if (r.member_vote === 'No' || r.member_vote === 'Nay') kwCounts[kw].no++;
       else kwCounts[kw].other++;
 
-      // Attach model tags
+      // Attach model tags (case-insensitive match: state keywords are capitalized, OTS patterns are lowercase)
+      const kwLower = kw.toLowerCase();
       for (const model of otsModels) {
-        const keywords = TOPIC_KEYWORDS[model] || [];
-        if (keywords.includes(kw)) kwCounts[kw].models.add(model);
+        const patterns = TOPIC_KEYWORDS[model] || [];
+        if (patterns.some(p => kwLower.includes(p) || p.includes(kwLower))) kwCounts[kw].models.add(model);
       }
     }
   }
