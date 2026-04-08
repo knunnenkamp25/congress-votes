@@ -93,7 +93,13 @@
   .kw-row:hover td { background: #eff6ff !important; }
   .kw-name { font-weight: 500; color: var(--accent); }
   .kw-pct-bar { display: inline-block; height: 8px; border-radius: 4px; vertical-align: middle; }
-  .kw-model-tag { background: #f3e8ff; padding: 1px 6px; border-radius: 3px; font-size: 10px; color: #6b21a8; margin-right: 3px; white-space: nowrap; display: inline-block; margin-bottom: 1px; }
+  .kw-model-tag { padding: 1px 6px; border-radius: 3px; font-size: 10px; margin-right: 3px; white-space: nowrap; display: inline-block; margin-bottom: 1px; }
+  .kw-tier-primary { background: #dcfce7; color: #166534; font-weight: 600; border: 1px solid #86efac; }
+  .kw-tier-secondary { background: #dbeafe; color: #1e40af; border: 1px solid #93c5fd; }
+  .kw-tier-tertiary { background: #f3e8ff; color: #6b21a8; border: 1px solid #d8b4fe; }
+  .kw-model-select { font-size: 11px; padding: 2px 4px; border: 1px solid var(--border); border-radius: 4px; max-width: 170px; background: #fff; cursor: pointer; }
+  .kw-model-select:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 2px rgba(44,111,187,0.15); }
+  .kw-dropdown-cell { white-space: nowrap; }
   .active-kw-filter { background: #dbeafe; border: 2px solid var(--accent); border-radius: 6px; padding: 4px 12px; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 12px; }
   .active-kw-filter .clear-btn { cursor: pointer; color: var(--muted); font-weight: bold; font-size: 16px; line-height: 1; }
 </style>
@@ -273,7 +279,8 @@
               <th style="width:80px; cursor:pointer;" id="thKwNo">No <span class="sort-arrow" id="kwNoArrow"></span></th>
               <th style="width:80px;">Other</th>
               <th style="width:100px;">Yes %</th>
-              <th>OTS Models</th>
+              <th style="width:180px;">Selected OTS Model</th>
+              <th>All Matches</th>
             </tr>
           </thead>
           <tbody id="kwBody"></tbody>
@@ -373,6 +380,7 @@ const TOPIC_KEYWORDS = {
 };
 
 let otsModels = []; // loaded from Google Sheet
+let kwModelOverrides = {}; // manual overrides: { keyword: { selectedModel: 'ModelName', tier: 'primary' } }
 let topicResults = []; // [{model, total, yes, no, other, matchedKeywords}]
 let topicSortCol = 'total';
 let topicSortAsc = false;
@@ -992,29 +1000,69 @@ function matchVotesToTopics(records) {
   topicSortAsc = false;
 }
 
+// Tier scoring: compute how well an OTS model matches a keyword
+// Returns 'primary' | 'secondary' | 'tertiary' | null
+function scoreModelMatch(kwLower, model) {
+  const patterns = TOPIC_KEYWORDS[model] || [];
+  if (patterns.length === 0) return null;
+
+  let bestTier = null;
+  for (const p of patterns) {
+    // Primary: exact match (keyword equals pattern)
+    if (kwLower === p || p === kwLower.replace(/\s+/g, ' ').trim()) {
+      return 'primary';
+    }
+    // Secondary: one fully contains the other as a word/substring
+    if (kwLower.includes(p) || p.includes(kwLower)) {
+      if (!bestTier || bestTier === 'tertiary') bestTier = 'secondary';
+    }
+  }
+
+  // Tertiary: word-level overlap (any word in keyword appears in any pattern)
+  if (!bestTier) {
+    const kwWords = kwLower.split(/\s+/).filter(w => w.length > 2);
+    for (const p of patterns) {
+      const pWords = p.split(/\s+/).filter(w => w.length > 2);
+      if (kwWords.some(w => pWords.includes(w)) || pWords.some(w => kwWords.includes(w))) {
+        bestTier = 'tertiary';
+        break;
+      }
+    }
+  }
+
+  return bestTier;
+}
+
 function analyzeKeywords(records) {
   const kwCounts = {};
   for (const r of records) {
     for (const kw of (r.keywords || [])) {
-      if (!kwCounts[kw]) kwCounts[kw] = { keyword: kw, yes: 0, no: 0, other: 0, models: new Set() };
+      if (!kwCounts[kw]) kwCounts[kw] = { keyword: kw, yes: 0, no: 0, other: 0, tieredModels: [] };
       if (r.member_vote === 'Yes' || r.member_vote === 'Yea') kwCounts[kw].yes++;
       else if (r.member_vote === 'No' || r.member_vote === 'Nay') kwCounts[kw].no++;
       else kwCounts[kw].other++;
-
-      // Attach model tags (case-insensitive match: state keywords are capitalized, OTS patterns are lowercase)
-      const kwLower = kw.toLowerCase();
-      for (const model of otsModels) {
-        const patterns = TOPIC_KEYWORDS[model] || [];
-        if (patterns.some(p => kwLower.includes(p) || p.includes(kwLower))) kwCounts[kw].models.add(model);
-      }
     }
+  }
+
+  // Compute tiered OTS model matches for each keyword (once, not per-record)
+  for (const kw of Object.keys(kwCounts)) {
+    const kwLower = kw.toLowerCase();
+    const matches = [];
+    for (const model of otsModels) {
+      const tier = scoreModelMatch(kwLower, model);
+      if (tier) matches.push({ model, tier });
+    }
+    // Sort: primary first, then secondary, then tertiary
+    const tierOrder = { primary: 0, secondary: 1, tertiary: 2 };
+    matches.sort((a, b) => tierOrder[a.tier] - tierOrder[b.tier]);
+    kwCounts[kw].tieredModels = matches;
   }
 
   keywordResults = Object.values(kwCounts).map(kw => ({
     ...kw,
     total: kw.yes + kw.no + kw.other,
     percentage: ((kw.yes / (kw.yes + kw.no)) * 100).toFixed(1),
-    models: Array.from(kw.models),
+    models: kw.tieredModels.map(m => m.model),
   }));
 
   kwSortCol = 'total';
@@ -1068,6 +1116,32 @@ function renderKwTable() {
     const row = document.createElement('tr');
     row.className = 'kw-row';
     const pctWidth = kw.yes / (kw.yes + kw.no) * 100;
+
+    // Build tiered model tags
+    const tiered = kw.tieredModels || [];
+    const override = kwModelOverrides[kw.keyword];
+    const selectedModel = override ? override.selectedModel : (tiered.length > 0 ? tiered[0].model : '');
+
+    // Dropdown for selecting the active OTS model
+    let dropdownHtml = '<select class="kw-model-select" data-keyword="' + kw.keyword.replace(/"/g, '&quot;') + '">';
+    dropdownHtml += '<option value="">— None —</option>';
+    const tierLabels = { primary: '★', secondary: '◆', tertiary: '○' };
+    for (const tm of tiered) {
+      const sel = tm.model === selectedModel ? ' selected' : '';
+      dropdownHtml += `<option value="${tm.model.replace(/"/g, '&quot;')}"${sel}>${tierLabels[tm.tier]} ${tm.model}</option>`;
+    }
+    // If override model isn't in the tiered list, add it
+    if (override && !tiered.find(t => t.model === override.selectedModel)) {
+      dropdownHtml += `<option value="${override.selectedModel.replace(/"/g, '&quot;')}" selected>✎ ${override.selectedModel}</option>`;
+    }
+    dropdownHtml += '</select>';
+
+    // All matches with tier badges
+    const allMatchesHtml = tiered.map(tm => {
+      const tierClass = 'kw-tier-' + tm.tier;
+      return `<span class="kw-model-tag ${tierClass}">${tierLabels[tm.tier]} ${tm.model}</span>`;
+    }).join('');
+
     row.innerHTML = `
       <td class="kw-name">${kw.keyword}</td>
       <td><strong>${kw.total}</strong></td>
@@ -1075,9 +1149,30 @@ function renderKwTable() {
       <td><strong class="topic-count-no">${kw.no}</strong></td>
       <td>${kw.other}</td>
       <td><span class="kw-pct-bar" style="width:${pctWidth}px; background:#059669; opacity:0.5;"></span> ${kw.percentage}%</td>
-      <td>${kw.models.map(m => `<span class="kw-model-tag">${m}</span>`).join('')}</td>
+      <td class="kw-dropdown-cell">${dropdownHtml}</td>
+      <td>${allMatchesHtml || '<span style="color:var(--muted); font-size:11px;">No matches</span>'}</td>
     `;
-    row.addEventListener('click', () => filterByKeyword(kw.keyword));
+
+    // Click to filter, but not on the dropdown
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('.kw-model-select')) return;
+      filterByKeyword(kw.keyword);
+    });
+
+    // Dropdown change handler
+    const select = row.querySelector('.kw-model-select');
+    select.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const keyword = e.target.dataset.keyword;
+      const val = e.target.value;
+      if (val) {
+        const tm = tiered.find(t => t.model === val);
+        kwModelOverrides[keyword] = { selectedModel: val, tier: tm ? tm.tier : 'manual' };
+      } else {
+        delete kwModelOverrides[keyword];
+      }
+    });
+
     tbody.appendChild(row);
   }
 }
@@ -1144,9 +1239,16 @@ $('topicCsvBtn').addEventListener('click', () => {
 });
 
 $('kwCsvBtn').addEventListener('click', () => {
-  const csv = [['Keyword', 'Total', 'Yes', 'No', 'Other', 'Yes %', 'Models']];
+  const csv = [['Keyword', 'Total', 'Yes', 'No', 'Other', 'Yes %', 'Selected OTS Model', 'Selected Tier', 'Primary Models', 'Secondary Models', 'Tertiary Models']];
   for (const kw of keywordResults) {
-    csv.push([kw.keyword, kw.total, kw.yes, kw.no, kw.other, kw.percentage, kw.models.join(';')]);
+    const tiered = kw.tieredModels || [];
+    const override = kwModelOverrides[kw.keyword];
+    const selected = override ? override.selectedModel : (tiered.length > 0 ? tiered[0].model : '');
+    const selectedTier = override ? override.tier : (tiered.length > 0 ? tiered[0].tier : '');
+    const primary = tiered.filter(t => t.tier === 'primary').map(t => t.model).join('; ');
+    const secondary = tiered.filter(t => t.tier === 'secondary').map(t => t.model).join('; ');
+    const tertiary = tiered.filter(t => t.tier === 'tertiary').map(t => t.model).join('; ');
+    csv.push([kw.keyword, kw.total, kw.yes, kw.no, kw.other, kw.percentage, selected, selectedTier, primary, secondary, tertiary]);
   }
   const text = csv.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
   const blob = new Blob([text], {type: 'text/csv'});
