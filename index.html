@@ -739,6 +739,7 @@ async function loadVotes() {
         needed.push({ congress: c, chamber: ch });
       }
     }
+    console.log('Needed congresses:', JSON.stringify(needed));
 
     // Find ICPSR(s) for this member from cached members data
     $('status').textContent = 'Finding member IDs ...';
@@ -746,9 +747,11 @@ async function loadVotes() {
     for (const r of cachedMemberRows) {
       if (r.bioguide_id === m.bioguide_id) icpsrSet.add(r.icpsr);
     }
+    console.log('ICPSR set:', [...icpsrSet]);
 
     // Load per-congress vote + rollcall files
     voteRecords = [];
+    let debugInfo = [];
     for (let i = 0; i < needed.length; i++) {
       const { congress, chamber } = needed[i];
       $('status').textContent = `Loading votes: ${congress}th Congress ${chamber} (${i+1}/${needed.length}) ...`;
@@ -761,6 +764,7 @@ async function loadVotes() {
       let fetchSucceeded = false;
       for (const base of VOTEVIEW_URLS) {
         try {
+          $('status').textContent = `Loading votes: ${prefix}${congress} from ${base.split('//')[1].split('/')[0]} (${i+1}/${needed.length}) ...`;
           const [vResp, rcResp] = await Promise.all([
             smartFetch(base + `/votes/${prefix}${congress}_votes.csv`),
             smartFetch(base + `/rollcalls/${prefix}${congress}_rollcalls.csv`)
@@ -768,14 +772,18 @@ async function loadVotes() {
           if (vResp.ok) vRows = parseCSV(await vResp.text());
           if (rcResp.ok) rcRows = parseCSV(await rcResp.text());
           fetchSucceeded = true;
+          console.log(`${prefix}${congress}: ${vRows.length} vote rows, ${rcRows.length} rollcall rows`);
+          debugInfo.push(`${prefix}${congress}: ${vRows.length} votes, ${rcRows.length} rollcalls`);
           break;
         } catch(e) {
           console.log('Vote fetch failed for', base, congress, e.message);
+          debugInfo.push(`${prefix}${congress} @ ${base.split('//')[1].split('/')[0]}: FAILED - ${e.message}`);
           continue;
         }
       }
       if (!fetchSucceeded) {
         console.warn(`Could not load votes for ${prefix}${congress} from any domain`);
+        debugInfo.push(`${prefix}${congress}: ALL DOMAINS FAILED`);
       }
 
       // Build rollcall lookup for this congress/chamber
@@ -814,7 +822,8 @@ async function loadVotes() {
 
     if (voteRecords.length === 0) {
       $('status').className = 'status error';
-      $('status').textContent = 'No votes found. The vote data source may be temporarily unavailable — please try again in a few minutes.';
+      const dbg = debugInfo.length ? '\nDebug: ' + debugInfo.join(' | ') : '';
+      $('status').textContent = `No votes found for ${m.name}. Needed: ${needed.length} congress/chamber combos. ICPSRs: [${[...icpsrSet]}].${dbg}`;
       $('loadBtn').disabled = false;
       $('loadBtn').textContent = 'Load Votes';
       return;
