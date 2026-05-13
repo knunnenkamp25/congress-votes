@@ -314,10 +314,11 @@ const STATE_DATA_BASE = './state_data';  // relative to index.html on GitHub Pag
 
 const VOTEVIEW = 'https://voteview.com/static/data/out';
 // Multiple CORS proxies for redundancy (free proxies go down frequently)
+// Each proxy is a function because they have different URL formats
 const PROXIES = [
-  'https://api.allorigins.win/raw?url=',
-  'https://corsproxy.io/?url=',
-  'https://api.codetabs.com/v1/proxy?quest=',
+  url => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
+  url => 'https://corsproxy.io/' + encodeURIComponent(url),
+  url => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url),
 ];
 const CONGRESS_API = 'https://api.congress.gov/v3';
 const CONGRESS_API_KEY = '3EjVW2YdyBLeswQgk2dMceZ1L5C7lXcReGE9ePV0';
@@ -392,28 +393,37 @@ let topicSortCol = 'total';
 let topicSortAsc = false;
 
 // Smart fetch: try direct first, then cycle through CORS proxies
-let workingProxy = null;
+let workingProxyIdx = -1;
 async function smartFetch(url) {
-  // If we already found a working proxy, use it
-  if (workingProxy !== null) {
-    const resp = await fetch(workingProxy + encodeURIComponent(url));
-    if (resp.ok) return resp;
+  // If we already found a working proxy, try it first
+  if (workingProxyIdx >= 0) {
+    try {
+      const resp = await fetch(PROXIES[workingProxyIdx](url));
+      if (resp.ok) return resp;
+    } catch(e) { workingProxyIdx = -1; /* cached proxy failed, try all */ }
   }
   // Try direct fetch first
   try {
     const resp = await fetch(url);
-    if (resp.ok) return resp;
-  } catch(e) { /* CORS blocked, try proxies */ }
+    if (resp.ok) { console.log('Direct fetch succeeded for:', url); return resp; }
+  } catch(e) { console.log('Direct fetch blocked (CORS) for:', url); }
   // Try each proxy in order
-  for (const proxy of PROXIES) {
+  for (let i = 0; i < PROXIES.length; i++) {
     try {
-      const resp = await fetch(proxy + encodeURIComponent(url));
+      const proxyUrl = PROXIES[i](url);
+      console.log('Trying proxy', i, ':', proxyUrl.substring(0, 80) + '...');
+      const resp = await fetch(proxyUrl);
       if (resp.ok) {
-        workingProxy = proxy;
-        console.log('Using CORS proxy:', proxy);
+        workingProxyIdx = i;
+        console.log('Proxy', i, 'succeeded');
         return resp;
+      } else {
+        console.log('Proxy', i, 'returned status:', resp.status);
       }
-    } catch(e) { continue; }
+    } catch(e) {
+      console.log('Proxy', i, 'error:', e.message);
+      continue;
+    }
   }
   throw new Error('All fetch methods failed for: ' + url);
 }
@@ -983,20 +993,23 @@ let kwSortAsc = false;
 let activeKwFilter = null;
 
 async function loadOTSModels() {
-  // Try direct fetch first, then via CORS proxy
+  // Try direct fetch first, then via CORS proxies
   let text = null;
   try {
     const resp = await fetch(OTS_CSV_URL);
     if (resp.ok) text = await resp.text();
-  } catch(e) { /* direct fetch failed */ }
+    else console.log('OTS direct fetch status:', resp.status);
+  } catch(e) { console.log('OTS direct fetch failed:', e.message); }
 
   if (!text) {
-    // Try via CORS proxies
-    for (const proxy of PROXIES) {
+    for (let i = 0; i < PROXIES.length; i++) {
       try {
-        const resp = await fetch(proxy + encodeURIComponent(OTS_CSV_URL));
-        if (resp.ok) { text = await resp.text(); break; }
-      } catch(e) { continue; }
+        const proxyUrl = PROXIES[i](OTS_CSV_URL);
+        console.log('OTS trying proxy', i);
+        const resp = await fetch(proxyUrl);
+        if (resp.ok) { text = await resp.text(); console.log('OTS proxy', i, 'succeeded'); break; }
+        else console.log('OTS proxy', i, 'status:', resp.status);
+      } catch(e) { console.log('OTS proxy', i, 'error:', e.message); continue; }
     }
   }
 
