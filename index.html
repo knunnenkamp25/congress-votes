@@ -51,6 +51,7 @@
   /* Status */
   .status { text-align: center; padding: 40px; color: var(--muted); font-size: 14px; }
   .status.loading::after { content: ''; display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin-left: 8px; vertical-align: middle; }
+  .status.error { color: #dc2626; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* Table */
@@ -312,7 +313,12 @@ let currentSession = '';
 const STATE_DATA_BASE = './state_data';  // relative to index.html on GitHub Pages
 
 const VOTEVIEW = 'https://voteview.com/static/data/out';
-const PROXY = 'https://api.codetabs.com/v1/proxy?quest=';
+// Multiple CORS proxies for redundancy (free proxies go down frequently)
+const PROXIES = [
+  'https://api.allorigins.win/raw?url=',
+  'https://corsproxy.io/?url=',
+  'https://api.codetabs.com/v1/proxy?quest=',
+];
 const CONGRESS_API = 'https://api.congress.gov/v3';
 const CONGRESS_API_KEY = '3EjVW2YdyBLeswQgk2dMceZ1L5C7lXcReGE9ePV0';
 const CAST = {1:'Yes',2:'Yes',3:'Yes',4:'No',5:'No',6:'No',7:'Present',8:'Present',9:'Not Voting'};
@@ -385,18 +391,31 @@ let topicResults = []; // [{model, total, yes, no, other, matchedKeywords}]
 let topicSortCol = 'total';
 let topicSortAsc = false;
 
-// Smart fetch: try direct first, fall back to CORS proxy
-let useProxy = false;
+// Smart fetch: try direct first, then cycle through CORS proxies
+let workingProxy = null;
 async function smartFetch(url) {
-  if (useProxy) return fetch(PROXY + encodeURIComponent(url));
+  // If we already found a working proxy, use it
+  if (workingProxy !== null) {
+    const resp = await fetch(workingProxy + encodeURIComponent(url));
+    if (resp.ok) return resp;
+  }
+  // Try direct fetch first
   try {
     const resp = await fetch(url);
     if (resp.ok) return resp;
-    throw new Error('not ok');
-  } catch(e) {
-    useProxy = true;
-    return fetch(PROXY + encodeURIComponent(url));
+  } catch(e) { /* CORS blocked, try proxies */ }
+  // Try each proxy in order
+  for (const proxy of PROXIES) {
+    try {
+      const resp = await fetch(proxy + encodeURIComponent(url));
+      if (resp.ok) {
+        workingProxy = proxy;
+        console.log('Using CORS proxy:', proxy);
+        return resp;
+      }
+    } catch(e) { continue; }
   }
+  throw new Error('All fetch methods failed for: ' + url);
 }
 const STOP = new Set('a an the of to for in on and or by with from at is it be as that this which act bill resolution provide providing amend relating united states america congress house senate section purpose purposes other certain establish authorize making regarding concerning department federal require general agreeing agreed passage motion table suspend rules stat app cong sess under title joint submitted chapter code proceed upon cloture nomination confirmation invoke invoking calendar consideration referred clerk thereof shall may such not into been has have would further than its all secretary virginia florida texas california ohio new york pennsylvania georgia illinois michigan north carolina south carolina arizona colorado missouri indiana iowa oregon utah district columbia judge circuit court united states nomination'.split(' '));
 
@@ -444,7 +463,15 @@ async function loadMembers() {
   $('status').className = 'status loading';
   $('status').textContent = 'Loading member directory ...';
 
-  const resp = await smartFetch(VOTEVIEW + '/members/HSall_members.csv');
+  let resp;
+  try {
+    resp = await smartFetch(VOTEVIEW + '/members/HSall_members.csv');
+  } catch(e) {
+    console.error('Failed to load members:', e);
+    $('status').className = 'status error';
+    $('status').textContent = 'Error loading member directory. The data source may be temporarily unavailable. Please try refreshing.';
+    return;
+  }
   const text = await resp.text();
   const rows = parseCSV(text);
   cachedMemberRows = rows; // cache for ICPSR lookups later
@@ -956,18 +983,34 @@ let kwSortAsc = false;
 let activeKwFilter = null;
 
 async function loadOTSModels() {
+  // Try direct fetch first, then via CORS proxy
+  let text = null;
   try {
     const resp = await fetch(OTS_CSV_URL);
-    const text = await resp.text();
-    // The Google Sheet CSV has one column; header may be "OTS Inventory Catalog"
-    // with "Model Name" as the first data row. Extract all non-header values.
-    const lines = text.split('\n').map(l => l.replace(/\r/g, '').trim()).filter(l => l);
-    const skip = new Set(['ots inventory catalog', 'model name', 'model']);
-    otsModels = lines.filter(l => !skip.has(l.toLowerCase())).map(l => l.replace(/^"|"$/g, ''));
-    console.log('OTS models loaded:', otsModels.length);
-  } catch(e) {
-    console.warn('Could not load OTS models:', e);
+    if (resp.ok) text = await resp.text();
+  } catch(e) { /* direct fetch failed */ }
+
+  if (!text) {
+    // Try via CORS proxies
+    for (const proxy of PROXIES) {
+      try {
+        const resp = await fetch(proxy + encodeURIComponent(OTS_CSV_URL));
+        if (resp.ok) { text = await resp.text(); break; }
+      } catch(e) { continue; }
+    }
   }
+
+  if (!text) {
+    console.warn('Could not load OTS models from any source');
+    return;
+  }
+
+  // The Google Sheet CSV has one column; header may be "OTS Inventory Catalog"
+  // with "Model Name" as the first data row. Extract all non-header values.
+  const lines = text.split('\n').map(l => l.replace(/\r/g, '').trim()).filter(l => l);
+  const skip = new Set(['ots inventory catalog', 'model name', 'model']);
+  otsModels = lines.filter(l => !skip.has(l.toLowerCase())).map(l => l.replace(/^"|"$/g, ''));
+  console.log('OTS models loaded:', otsModels.length);
 }
 
 function matchVotesToTopics(records) {
