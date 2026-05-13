@@ -312,7 +312,12 @@ let currentSession = '';
 
 const STATE_DATA_BASE = './state_data';  // relative to index.html on GitHub Pages
 
-const VOTEVIEW = 'https://voteview.com/static/data/out';
+// Try multiple voteview domains (UCLA sometimes changes hosting)
+const VOTEVIEW_URLS = [
+  'https://voteview.com/static/data/out',
+  'https://voteview.polisci.ucla.edu/static/data/out',
+];
+const VOTEVIEW = VOTEVIEW_URLS[0]; // default
 // Multiple CORS proxies for redundancy (free proxies go down frequently)
 // Each proxy is a function because they have different URL formats
 const PROXIES = [
@@ -395,30 +400,42 @@ let topicSortAsc = false;
 // Smart fetch: try direct first, then cycle through CORS proxies
 let workingProxyIdx = -1;
 async function smartFetch(url) {
+  // Helper: verify response has real data, not a login/error HTML page
+  async function validateResp(resp) {
+    if (!resp.ok) return null;
+    const clone = resp.clone();
+    const peek = await clone.text();
+    if (peek.trimStart().startsWith('<!DOCTYPE') || peek.trimStart().startsWith('<html')) {
+      console.log('Response was HTML redirect page, not data');
+      return null;
+    }
+    // Return a new response with the text we already read
+    return new Response(peek, { status: 200, headers: resp.headers });
+  }
   // If we already found a working proxy, try it first
   if (workingProxyIdx >= 0) {
     try {
-      const resp = await fetch(PROXIES[workingProxyIdx](url));
-      if (resp.ok) return resp;
-    } catch(e) { workingProxyIdx = -1; /* cached proxy failed, try all */ }
+      const resp = await validateResp(await fetch(PROXIES[workingProxyIdx](url)));
+      if (resp) return resp;
+    } catch(e) { workingProxyIdx = -1; }
   }
   // Try direct fetch first
   try {
-    const resp = await fetch(url);
-    if (resp.ok) { console.log('Direct fetch succeeded for:', url); return resp; }
+    const resp = await validateResp(await fetch(url));
+    if (resp) { console.log('Direct fetch succeeded for:', url); return resp; }
   } catch(e) { console.log('Direct fetch blocked (CORS) for:', url); }
   // Try each proxy in order
   for (let i = 0; i < PROXIES.length; i++) {
     try {
       const proxyUrl = PROXIES[i](url);
       console.log('Trying proxy', i, ':', proxyUrl.substring(0, 80) + '...');
-      const resp = await fetch(proxyUrl);
-      if (resp.ok) {
+      const resp = await validateResp(await fetch(proxyUrl));
+      if (resp) {
         workingProxyIdx = i;
         console.log('Proxy', i, 'succeeded');
         return resp;
       } else {
-        console.log('Proxy', i, 'returned status:', resp.status);
+        console.log('Proxy', i, 'failed or returned HTML');
       }
     } catch(e) {
       console.log('Proxy', i, 'error:', e.message);
@@ -474,12 +491,21 @@ async function loadMembers() {
   $('status').textContent = 'Loading member directory ...';
 
   let resp;
-  try {
-    resp = await smartFetch(VOTEVIEW + '/members/HSall_members.csv');
-  } catch(e) {
-    console.error('Failed to load members:', e);
+  // Try each voteview domain in case one is down
+  for (const base of VOTEVIEW_URLS) {
+    try {
+      console.log('Trying voteview base:', base);
+      resp = await smartFetch(base + '/members/HSall_members.csv');
+      if (resp) break;
+    } catch(e) {
+      console.log('Voteview domain failed:', base, e.message);
+      continue;
+    }
+  }
+  if (!resp) {
+    console.error('Failed to load members from all voteview domains');
     $('status').className = 'status error';
-    $('status').textContent = 'Error loading member directory. The data source may be temporarily unavailable. Please try refreshing.';
+    $('status').textContent = 'Error loading member directory. Voteview.com may be temporarily unavailable. Please try again later.';
     return;
   }
   const text = await resp.text();
@@ -995,9 +1021,19 @@ let activeKwFilter = null;
 async function loadOTSModels() {
   // Try direct fetch first, then via CORS proxies
   let text = null;
+
+  // Helper to check if response is real CSV data (not HTML login page)
+  function isValidCSV(t) {
+    return t && !t.trimStart().startsWith('<!DOCTYPE') && !t.trimStart().startsWith('<html');
+  }
+
   try {
     const resp = await fetch(OTS_CSV_URL);
-    if (resp.ok) text = await resp.text();
+    if (resp.ok) {
+      const t = await resp.text();
+      if (isValidCSV(t)) text = t;
+      else console.log('OTS direct fetch returned HTML, not CSV');
+    }
     else console.log('OTS direct fetch status:', resp.status);
   } catch(e) { console.log('OTS direct fetch failed:', e.message); }
 
@@ -1007,14 +1043,21 @@ async function loadOTSModels() {
         const proxyUrl = PROXIES[i](OTS_CSV_URL);
         console.log('OTS trying proxy', i);
         const resp = await fetch(proxyUrl);
-        if (resp.ok) { text = await resp.text(); console.log('OTS proxy', i, 'succeeded'); break; }
+        if (resp.ok) {
+          const t = await resp.text();
+          if (isValidCSV(t)) { text = t; console.log('OTS proxy', i, 'succeeded'); break; }
+          else console.log('OTS proxy', i, 'returned HTML, not CSV');
+        }
         else console.log('OTS proxy', i, 'status:', resp.status);
       } catch(e) { console.log('OTS proxy', i, 'error:', e.message); continue; }
     }
   }
 
   if (!text) {
-    console.warn('Could not load OTS models from any source');
+    // Fallback: use TOPIC_KEYWORDS keys as OTS model list
+    console.warn('Could not load OTS models from Google Sheet — using built-in TOPIC_KEYWORDS as fallback');
+    otsModels = Object.keys(TOPIC_KEYWORDS);
+    console.log('Fallback OTS models loaded:', otsModels.length);
     return;
   }
 
