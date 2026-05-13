@@ -756,15 +756,27 @@ async function loadVotes() {
       const prefix = chamber === 'House' ? 'H' : 'S';
 
       // Fetch vote file and per-congress rollcall file in parallel
+      // Try each voteview domain until one works
       let vRows = [], rcRows = [];
-      try {
-        const [vResp, rcResp] = await Promise.all([
-          smartFetch(VOTEVIEW + `/votes/${prefix}${congress}_votes.csv`),
-          smartFetch(VOTEVIEW + `/rollcalls/${prefix}${congress}_rollcalls.csv`)
-        ]);
-        if (vResp.ok) vRows = parseCSV(await vResp.text());
-        if (rcResp.ok) rcRows = parseCSV(await rcResp.text());
-      } catch(e) { /* skip unavailable */ }
+      let fetchSucceeded = false;
+      for (const base of VOTEVIEW_URLS) {
+        try {
+          const [vResp, rcResp] = await Promise.all([
+            smartFetch(base + `/votes/${prefix}${congress}_votes.csv`),
+            smartFetch(base + `/rollcalls/${prefix}${congress}_rollcalls.csv`)
+          ]);
+          if (vResp.ok) vRows = parseCSV(await vResp.text());
+          if (rcResp.ok) rcRows = parseCSV(await rcResp.text());
+          fetchSucceeded = true;
+          break;
+        } catch(e) {
+          console.log('Vote fetch failed for', base, congress, e.message);
+          continue;
+        }
+      }
+      if (!fetchSucceeded) {
+        console.warn(`Could not load votes for ${prefix}${congress} from any domain`);
+      }
 
       // Build rollcall lookup for this congress/chamber
       const rcMap = {};
@@ -799,6 +811,14 @@ async function loadVotes() {
 
     // Sort by date descending
     voteRecords.sort((a,b) => b.date.localeCompare(a.date));
+
+    if (voteRecords.length === 0) {
+      $('status').className = 'status error';
+      $('status').textContent = 'No votes found. The vote data source may be temporarily unavailable — please try again in a few minutes.';
+      $('loadBtn').disabled = false;
+      $('loadBtn').textContent = 'Load Votes';
+      return;
+    }
 
     // Show member card
     showMemberCard(m, voteRecords);
