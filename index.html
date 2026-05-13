@@ -332,8 +332,49 @@ const summaryCache = {}; // bill_number → {title, summary}
 const PARTY_MAP = {'100':'Democratic','200':'Republican','328':'Independent','114':'Whig','1':'Federalist'};
 
 // Google Sheet with OTS model list (public CSV export)
-const OTS_SHEET_ID = '1rV7Dgr72gE47MOcYzD9OsuA_f8eU4flA_iBMAgvQjps';
+const OTS_SHEET_ID = '10rHtX5c2bADEwaozICW86qkEireYHIBY9cQ7U3Jfq4I';
 const OTS_CSV_URL = `https://docs.google.com/spreadsheets/d/${OTS_SHEET_ID}/export?format=csv&gid=0`;
+
+// Hardcoded fallback OTS model list (from OTS Vote Scraper Plugin sheet)
+const OTS_FALLBACK = [
+  'Generation','Urbanicity','Transit Access','Political Party','Ideology','Veteran',
+  'Military Relationship','Home Owners','Home Renters','Dwelling Type',
+  'Gun Owners (Consumer Data)','Concealed Carry Permit Holders','Parents (Any Children)',
+  'Single Parents','Small Business Owners','Outdoorsman / Conservationists',
+  'Likely AB Voter','Party Switcher','ESL Speakers','Household Language',
+  'Charitable Donors (Non-Political)','Likely Donors (Political)',
+  'Health Care Costs Priority','Pet Owners','Occupation Group','Retired Voters',
+  'Religion','Marital Status','Investor','Online Buyer','Reachable - Walkable',
+  'Reachable - Digital Phone','Reachable - Cell','Reachable - Landline',
+  'Reachable - Mail','Unreachable','Credit Rating','HH Income','Net Worth',
+  'Inconsistent Voters','Newly Registered Voters','Movers','News / Media Habits',
+  'Independent Women','Independent Men','Suburban Women','Rural Women',
+  'Non-College Men','Non-College Women','Education Level','Ethnicity',
+  'Ethnicity Subgroup','Near-Retirees (55-64)','Medicare-Eligible (65+)',
+  'Multi-Generational Households','Senior Adult in Household',
+  'Young Adult in Household','Disability Status','NASCAR / Motorsports Fans',
+  'Gamers (PC/Console)','Credit Card User','Frequent Travelers',
+  'Politically Engaged','Religious Enthusiasm','Clergy / Religious Workers',
+  'College-Age Voters (18-22)','College-Educated Men','College-Educated Women',
+  'Construction / Trades Workers','Cross-Primary Voters','Drop-Off Voters',
+  'Empty Nesters','Executive / C-Suite','Farmers / Agricultural Workers',
+  'Female Veterans','First-Time Voters','Gardeners','High News Intake',
+  'Latino Men','Legal Professionals','Off-Year / Odd-Year Voter',
+  'Caregiver Household','Vietnam-Era Veterans','Casino / Gambling Interest',
+  'Reader','Music Enthusiast','Automotive Enthusiast','Cooking Enthusiast',
+  'Home Improvers','Crafter','Sports Fan','Snow Sports','Boating / Sailing',
+  'Smoker','Working Women','Reachable - Digital IP','Work From Home / SOHO',
+  'Collector','Retail Shopper','Arts Enthusiast','Photography Enthusiast',
+  'Movie / Entertainment Fan','Technology Enthusiast','Club Member',
+  'Upscale Lifestyle','No Internet / Digital Divide',
+  'Parents of School-Age Children (6-17)','Parents of Young Children (0-5)',
+  'Sandwich Generation','Teachers / Educators','White Working-Class Voters',
+  'Women of Color','Post-9/11 Veterans','Distressed Community Quintile',
+  'Neighbor States','Lives in College County','Nearest College Sector',
+  'Nearest College Level','Lives in Base County','Joint Base County',
+  'Nearest Base Component','USPS Distance Bucket','USPS Extended Hours',
+  'County Crime Quintile',
+];
 
 // ---------------------------------------------------------------------------
 // OTS Model – keyword mapping
@@ -392,6 +433,7 @@ const TOPIC_KEYWORDS = {
 };
 
 let otsModels = []; // loaded from Google Sheet
+let otsModelValues = {}; // model name → array of possible values
 let kwModelOverrides = {}; // manual overrides: { keyword: { selectedModel: 'ModelName', tier: 'primary' } }
 let topicResults = []; // [{model, total, yes, no, other, matchedKeywords}]
 let topicSortCol = 'total';
@@ -1054,18 +1096,32 @@ async function loadOTSModels() {
   }
 
   if (!text) {
-    // Fallback: use TOPIC_KEYWORDS keys as OTS model list
-    console.warn('Could not load OTS models from Google Sheet — using built-in TOPIC_KEYWORDS as fallback');
-    otsModels = Object.keys(TOPIC_KEYWORDS);
+    // Fallback: use hardcoded OTS model list
+    console.warn('Could not load OTS models from Google Sheet — using hardcoded fallback');
+    otsModels = [...OTS_FALLBACK];
     console.log('Fallback OTS models loaded:', otsModels.length);
     return;
   }
 
-  // The Google Sheet CSV has one column; header may be "OTS Inventory Catalog"
-  // with "Model Name" as the first data row. Extract all non-header values.
+  // Sheet has two columns: "Model Name" and "Values"
+  // Parse CSV and extract first column (model names)
   const lines = text.split('\n').map(l => l.replace(/\r/g, '').trim()).filter(l => l);
-  const skip = new Set(['ots inventory catalog', 'model name', 'model']);
-  otsModels = lines.filter(l => !skip.has(l.toLowerCase())).map(l => l.replace(/^"|"$/g, ''));
+  const skip = new Set(['model name', 'model', 'ots inventory catalog']);
+  const parsed = [];
+  for (const line of lines) {
+    // Parse CSV line to handle quoted fields with commas in Values column
+    const fields = parseCSVLine(line);
+    const name = (fields[0] || '').replace(/^"|"$/g, '').trim();
+    if (name && !skip.has(name.toLowerCase())) {
+      parsed.push(name);
+      // Store values if present (for potential future use)
+      if (fields[1]) {
+        const vals = fields[1].replace(/^"|"$/g, '').trim();
+        if (vals) otsModelValues[name] = vals.split(' / ').map(v => v.trim());
+      }
+    }
+  }
+  otsModels = parsed.length > 0 ? parsed : [...OTS_FALLBACK];
   console.log('OTS models loaded:', otsModels.length);
 }
 
